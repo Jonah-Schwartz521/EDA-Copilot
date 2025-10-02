@@ -37,6 +37,12 @@ def compute_minimal_metrics(df: pd.DataFrame, table: str) -> pd.DataFrame:
     miss = df.isna().mean()
     for col, pct in miss.items():
         rows.append([table, col, "missing_pct", float(round(pct, 6)), ""]) 
+
+    # per-column cardinality (ignoring NaN)
+    for col in df.columns: 
+        uniq = int(df[col].nunique(dropna=True))
+        rows.append([table, col, "unique_count", uniq, ""])
+
     return pd.DataFrame(rows, columns=["table", "column", "metric", "value", "note"])
 
 def _sha256(path: str) -> str:
