@@ -29,6 +29,10 @@ def compute_minimal_metrics(df: pd.DataFrame, table: str) -> pd.DataFrame:
     rows = []
     # table-level row count 
     rows.append([table, "__table__", "row_count", int(len(df)), ""])
+
+    # duplicate row percentage
+    duo_pct = float(round(df.duplicated().mean(), 6))
+    rows.append([table, "__table__", "duplicate_row_pct", duo_pct, ""])
     # column-level missingness (0..1, rounded to 6 dp)
     miss = df.isna().mean()
     for col, pct in miss.items():
