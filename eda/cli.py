@@ -1,10 +1,16 @@
 import argparse
+import os
 import yaml 
 
+def ensure_dirs():
+    for d in ["outputs", "plots", "reports", "logs"]:
+        os.makedirs(d, exist_ok=True)
+
+
 def cmd_run(args):
-    print("running EDA with config:", args.config)
+    ensure_dirs()
     cfg = yaml.safe_load(open(args.config))
-    print("config loaded:", cfg)
+    print("ok: dirs exist; confid loaded for", cfg["data"]["name"])
 
 def build_parser():
     p = argparse.ArgumentParser(prog="eda", description="EDA Copilot")
