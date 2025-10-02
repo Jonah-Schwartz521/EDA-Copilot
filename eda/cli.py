@@ -3,6 +3,13 @@ import os
 import yaml 
 import pandas as pd 
 import sys 
+import json, hashlib, subprocess
+
+
+from datetime import datetime, timezone
+def _utc_now_iso_z() -> str:
+    # timezone-aware UTC, formatted as RFC3339 "Z" (Zulu)
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 def load_data(path:str) -> pd.DataFrame:
     ext = os.path.splitext(path)[1].lower()
@@ -28,20 +35,62 @@ def compute_minimal_metrics(df: pd.DataFrame, table: str) -> pd.DataFrame:
         rows.append([table, col, "missing_pct", float(round(pct, 6)), ""]) 
     return pd.DataFrame(rows, columns=["table", "column", "metric", "value", "note"])
 
+def _sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+            return h.hexdigest()
+        
+def _write_metadata(config_path: str, data_path: str) -> dict:
+    meta = {
+        "started_at": _utc_now_iso_z(),
+        "ended_at": None,
+        "python": sys.version,
+        "config_path": config_path,
+        "data_path": data_path,
+        "data_sha256": _sha256(data_path),
+        "git_sha": None,
+    }
+    try:
+        meta["git_sha"] = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL
+        ).decode().strip()
+    except Exception:
+        pass
+    os.makedirs("logs", exist_ok=True)
+    with open("logs/run_metadata.json", "w") as f:
+        json.dump(meta, f, indent=2)
+    return meta
+
+def _finish_metadata(meta: dict) -> None:
+    meta["ended_at"] = _utc_now_iso_z()
+    with open("logs/run_metadata.json", "w") as f:
+        json.dump(meta, f, indent=2)
+
+
+
 
 def cmd_run(args):
     ensure_dirs()
     cfg = yaml.safe_load(open(args.config))
     table = cfg["data"]["name"]
     data_path = cfg["data"]["path"]
+
     if not os.path.exists(data_path):
         sys.stderr.write(f"[ERROR] data file not found: {data_path}\n")
         sys.exit(2)
-    df = load_data(data_path)
 
+    meta = _write_metadata(args.config, data_path)
+
+    df = load_data(data_path)
     dq = compute_minimal_metrics(df, table)
     dq.to_csv("outputs/data_quality_report.csv", index=False)
     print("wrote outputs/data_quality_report.csv")
+
+    _finish_metadata(meta)
+
 def build_parser():
     p = argparse.ArgumentParser(prog="eda", description="EDA Copilot")
     sub = p.add_subparsers(dest="cmd", required=True)
