@@ -1,0 +1,22 @@
+# env
+.venv/
+_pycache_/
+*.pyc
+
+# IDE
+.vscode/
+
+# data and outputs (generated / sensitive)
+data/*
+!data/.gitkeep
+outputs/*
+!ouputs.gitkeep
+plots/*
+!plots.gitkeep
+logs/*
+!logs/.gitkeep
+reports/*
+!reports/.gitkeep
+
+# OS
+.DS_Store``
