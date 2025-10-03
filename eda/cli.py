@@ -43,6 +43,25 @@ def compute_minimal_metrics(df: pd.DataFrame, table: str) -> pd.DataFrame:
         uniq = int(df[col].nunique(dropna=True))
         rows.append([table, col, "unique_count", uniq, ""])
 
+    
+    # numeric summaries for numeric columns only 
+    num_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    for col in num_cols:
+        s = df[col].dropna()
+        stats = {
+            "count_non_null": int(s.size),
+            "mean": float(round(s.mean(), 6)) if s.size else None,
+            "std": float(round(s.std(ddof=1), 6)) if s.size > 1 else None, 
+            "min":    float(s.min()) if s.size else None,
+            "q25":    float(s.quantile(0.25)) if s.size else None,
+            "median": float(s.quantile(0.50)) if s.size else None,
+            "q75":    float(s.quantile(0.75)) if s.size else None,
+            "max":    float(s.max()) if s.size else None,
+    }
+    for metric, val in stats.items():
+        rows.append([table, col, metric, (val if val is not None else ""), ""])
+
+
     return pd.DataFrame(rows, columns=["table", "column", "metric", "value", "note"])
 
 def _sha256(path: str) -> str:
