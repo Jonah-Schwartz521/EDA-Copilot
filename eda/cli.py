@@ -31,38 +31,53 @@ def compute_minimal_metrics(df: pd.DataFrame, table: str) -> pd.DataFrame:
     rows.append([table, "__table__", "row_count", int(len(df)), ""])
 
     # duplicate row percentage
-    duo_pct = float(round(df.duplicated().mean(), 6))
-    rows.append([table, "__table__", "duplicate_row_pct", duo_pct, ""])
+    dup_pct = float(round(df.duplicated().mean(), 6))
+    rows.append([table, "__table__", "duplicate_row_pct", dup_pct, ""])
+
     # column-level missingness (0..1, rounded to 6 dp)
     miss = df.isna().mean()
     for col, pct in miss.items():
-        rows.append([table, col, "missing_pct", float(round(pct, 6)), ""]) 
+        rows.append([table, col, "missing_pct", float(round(pct, 6)), ""])
 
     # per-column cardinality (ignoring NaN)
-    for col in df.columns: 
+    for col in df.columns:
         uniq = int(df[col].nunique(dropna=True))
         rows.append([table, col, "unique_count", uniq, ""])
 
-    
     # numeric summaries for numeric columns only 
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()
     for col in num_cols:
         s = df[col].dropna()
         stats = {
             "count_non_null": int(s.size),
-            "mean": float(round(s.mean(), 6)) if s.size else None,
-            "std": float(round(s.std(ddof=1), 6)) if s.size > 1 else None, 
+            "mean":   float(round(s.mean(), 6)) if s.size else None,
+            "std":    float(round(s.std(ddof=1), 6)) if s.size > 1 else None,
             "min":    float(s.min()) if s.size else None,
             "q25":    float(s.quantile(0.25)) if s.size else None,
             "median": float(s.quantile(0.50)) if s.size else None,
             "q75":    float(s.quantile(0.75)) if s.size else None,
             "max":    float(s.max()) if s.size else None,
-    }
-    for metric, val in stats.items():
-        rows.append([table, col, metric, (val if val is not None else ""), ""])
+        }
+        for metric, val in stats.items():
+            rows.append([table, col, metric, (val if val is not None else ""), ""])
 
+    # Top-N values per column (deterministic)
+    for col in df.columns:
+        top = _topn_values(df[col], n=5)
+        for rank, (_, r) in enumerate(top.iterrows(), start=1):
+            rows.append([table, col, f"top{rank}_value", str(r["value"]), ""])
+            rows.append([table, col, f"top{rank}_count", int(r["count"]), ""])
 
     return pd.DataFrame(rows, columns=["table", "column", "metric", "value", "note"])
+
+def _topn_values(s, n=5):
+    # determinstic: count desc, value(as str) asc for tie-break 
+    vc = s.value_counts(dropna=True)
+    dfc = vc.reset_index()
+    dfc.columns = ["value", "count"]
+    dfc["value_str"] = dfc["value"].astype(str)
+    dfc = dfc.sort_values(["count", "value_str"], ascending=[False, True])
+    return dfc.head(n)
 
 def _sha256(path: str) -> str:
     h = hashlib.sha256()
