@@ -4,7 +4,7 @@ import yaml
 import pandas as pd 
 import sys 
 import json, hashlib, subprocess
-
+import numpy as np 
 
 from datetime import datetime, timezone
 def _utc_now_iso_z() -> str:
@@ -84,13 +84,15 @@ def _sha256(path: str) -> str:
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
-            return h.hexdigest()
+    return h.hexdigest()
         
 def _write_metadata(config_path: str, data_path: str) -> dict:
     meta = {
         "started_at": _utc_now_iso_z(),
         "ended_at": None,
         "python": sys.version,
+        "pandas": pd.__version__,
+        "numpy": np.__version__,
         "config_path": config_path,
         "data_path": data_path,
         "data_sha256": _sha256(data_path),
