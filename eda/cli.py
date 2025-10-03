@@ -70,6 +70,33 @@ def compute_minimal_metrics(df: pd.DataFrame, table: str) -> pd.DataFrame:
 
     return pd.DataFrame(rows, columns=["table", "column", "metric", "value", "note"])
 
+def _apply_checks(df, table, checks):
+    rows = []
+    if not checks:
+        return rows
+    for col, spec in checks.items():   # ← items(), not item()
+        if col not in df.columns:
+            continue
+        s = df[col]
+
+        # numeric range
+        if "min" in spec or "max" in spec:
+            s_num = pd.to_numeric(s, errors="coerce")
+            lo = spec.get("min", float("-inf"))
+            hi = spec.get("max", float("inf"))    # ← +inf by default
+            too_low  = (s_num < lo).sum()
+            too_high = (s_num > hi).sum()
+            rows.append([table, col, "violations_out_of_range_count",
+                         int(too_low + too_high), ""])
+
+        # allowed categories
+        if "allowed" in spec:
+            allowed = {str(a) for a in spec["allowed"]}
+            invalid = (~s.isna()) & (~s.astype(str).isin(allowed))
+            rows.append([table, col, "invalid_category_count", int(invalid.sum()), ""])
+    return rows
+
+
 def _topn_values(s, n=5):
     # determinstic: count desc, value(as str) asc for tie-break 
     vc = s.value_counts(dropna=True)
@@ -132,6 +159,16 @@ def cmd_run(args):
 
     df = load_data(data_path)
     dq = compute_minimal_metrics(df, table)
+
+    # apply optional validation rules from YAML 
+    checks = cfg.get("checks") or {}
+    extra_rows = _apply_checks(df, table, checks)
+    if extra_rows:
+        dq = pd.concat(
+            [dq, pd.DataFrame(extra_rows, columns=["table", "column", "metric", "value", "note"])], 
+            ignore_index=True
+        )
+
     dq.to_csv("outputs/data_quality_report.csv", index=False)
     print("wrote outputs/data_quality_report.csv")
 
