@@ -1,0 +1,12 @@
+data:
+  name: ufc_bad
+  path: data/fixtures/ufc_bad.csv
+
+checks:
+  round: { min: 1, max: 5 }
+  time:  { min: 0, max: 300 }
+  method:
+    allowed: [KO, Decision, Submission]
+
+keys:
+  primary: ["fight_id"]
