@@ -229,23 +229,29 @@ def _write_reports():
     os.makedirs("reports", exist_ok=True)
     dq = pd.read_csv("outputs/data_quality_report.csv")
 
-    with open("reports/findings_memo.md", "w") as f: 
+    # Findings memo (reads only the contract CSV)
+    with open("reports/findings_memo.md", "w") as f:
         f.write("# Findings (from outputs/data_quality_report.csv)\n\n")
-        # rows 
-        row_q = dq.query("column=='__table__' and metric=='row_count'")
-        if not row_q.empty: 
+
+        # Rows (table-level)
+        row_q = dq[(dq["column"] == "__table__") & (dq["metric"] == "row_count")]
+        if not row_q.empty:
             row_cnt = int(float(row_q["value"].iloc[0]))
             f.write(f"- **Rows:** {row_cnt}\n")
-            # top missingness
-            miss = dq.query("metric == 'missing_pct' and column != '__table__'").copy()
-            if not miss.empty:
-                miss["value"] = miss['value'].astype(float)
-                f.write("\n## Missingness (top 3)\n")
-                for _, r in miss.sort_values("value", ascending=False).head(3).iterrows():
-                    f.write(f"- {r['column']}: {r['value']}\n")
-        # validation issues
+
+        # Top-3 missingness
+        miss = dq[(dq["metric"] == "missing_pct") & (dq["column"] != "__table__")].copy()
+        if not miss.empty:
+            miss["value"] = miss["value"].astype(float)
+            f.write("\n## Missingness (top 3)\n")
+            for _, r in miss.sort_values("value", ascending=False).head(3).iterrows():
+                f.write(f"- {r['column']}: {r['value']}\n")
+
+        # Validation issues
         viol = dq[dq["metric"].isin([
-            "violations_out_of_range_count","invalid_category_count","duplicate_key_groups_count"
+            "violations_out_of_range_count",
+            "invalid_category_count",
+            "duplicate_key_groups_count",
         ])].copy()
         if not viol.empty:
             f.write("\n## Validation issues\n")
@@ -253,12 +259,21 @@ def _write_reports():
                 v = int(float(r["value"])) if r["value"] != "" else 0
                 f.write(f"- {r['column']} · {r['metric']} = {v}\n")
 
-    with open("reports/next_actions.md","w") as f:
+        # Sources footer (cite only computed artifacts)
+        f.write("\n## Sources\n")
+        f.write("- outputs/data_quality_report.csv\n")
+        f.write("- logs/run_metadata.json\n")
+
+    # Next-actions memo
+    with open("reports/next_actions.md", "w") as f:
         f.write("# Next Actions\n")
         f.write("- Address highest missingness first.\n")
         f.write("- Resolve duplicate keys/rows if present.\n")
         f.write("- Fix invalid categories or update allow-list in YAML.\n")
         f.write("- Review out-of-range numeric values for entry/ETL errors.\n")
+        f.write("\n## Sources\n")
+        f.write("- outputs/data_quality_report.csv\n")
+        f.write("- logs/run_metadata.json\n")
 
 
 def cmd_run(args):
