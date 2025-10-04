@@ -225,6 +225,41 @@ def _finish_metadata(meta: dict) -> None:
     with open("logs/run_metadata.json", "w") as f:
         json.dump(meta, f, indent=2)
 
+def _write_reports():
+    os.makedirs("reports", exist_ok=True)
+    dq = pd.read_csv("outputs/data_quality_report.csv")
+
+    with open("reports/findings_memo.md", "w") as f: 
+        f.write("# Findings (from outputs/data_quality_report.csv)\n\n")
+        # rows 
+        row_q = dq.query("column=='__table__' and metric=='row_count'")
+        if not row_q.empty: 
+            row_cnt = int(float(row_q["value"].iloc[0]))
+            f.write(f"- **Rows:** {row_cnt}\n")
+            # top missingness
+            miss = dq.query("metric == 'missing_pct' and column != '__table__'").copy()
+            if not miss.empty:
+                miss["value"] = miss['value'].astype(float)
+                f.write("\n## Missingness (top 3)\n")
+                for _, r in miss.sort_values("value", ascending=False).head(3).iterrows():
+                    f.write(f"- {r['column']}: {r['value']}\n")
+        # validation issues
+        viol = dq[dq["metric"].isin([
+            "violations_out_of_range_count","invalid_category_count","duplicate_key_groups_count"
+        ])].copy()
+        if not viol.empty:
+            f.write("\n## Validation issues\n")
+            for _, r in viol.iterrows():
+                v = int(float(r["value"])) if r["value"] != "" else 0
+                f.write(f"- {r['column']} · {r['metric']} = {v}\n")
+
+    with open("reports/next_actions.md","w") as f:
+        f.write("# Next Actions\n")
+        f.write("- Address highest missingness first.\n")
+        f.write("- Resolve duplicate keys/rows if present.\n")
+        f.write("- Fix invalid categories or update allow-list in YAML.\n")
+        f.write("- Review out-of-range numeric values for entry/ETL errors.\n")
+
 
 def cmd_run(args):
     ensure_dirs()
@@ -273,6 +308,8 @@ def cmd_run(args):
     dq.to_csv("outputs/data_quality_report.csv", index=False)
     print("wrote outputs/data_quality_report.csv")
 
+    _write_reports()
+
     # 5 validated plots (each with a companion values/stats file)
     # 1) Missingness by column (bar)
     miss = df.isna().mean().sort_values(ascending=False)
@@ -304,11 +341,54 @@ def cmd_run(args):
 
     _finish_metadata(meta)
 
+def cmd_doctor(args):
+    problems = []
+
+    # Contract CSV exists + headers + key metric
+    csv_path = "outputs/data_quality_report.csv"
+    expected = ["table","column","metric","value","note"]
+    if not os.path.exists(csv_path):
+        problems.append(f"missing {csv_path}")
+    else:
+        with open(csv_path, newline="") as f:
+            hdr = next(csv.reader(f), [])
+        if hdr != expected:
+            problems.append(f"bad headers in {csv_path}: {hdr} != {expected}")
+        dq = pd.read_csv(csv_path)
+        if dq.query("column=='__table__' and metric=='row_count'").empty:
+            problems.append("row_count metric missing in contract CSV")
+
+    # Metadata exists + required keys + UTC timestamps
+    meta_path = "logs/run_metadata.json"
+    must = {"started_at","ended_at","python","pandas","numpy","config_path","data_path","data_sha256"}
+    if not os.path.exists(meta_path):
+        problems.append(f"missing {meta_path}")
+    else:
+        meta = json.load(open(meta_path))
+        missing = sorted(list(must - set(meta.keys())))
+        if missing:
+            problems.append(f"metadata missing keys: {missing}")
+        for k in ("started_at","ended_at"):
+            v = meta.get(k, "")
+            if not (isinstance(v, str) and (v.endswith('Z') or v.endswith('+00:00'))):
+                problems.append(f"{k} not UTC/RFC3339: {v}")
+
+    if problems:
+        print("❌ doctor found issues:")
+        for p in problems:
+            print(" -", p)
+        sys.exit(1)
+    print("✅ doctor: all checks passed")
+
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog="eda", description="EDA Copilot")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pr = sub.add_parser("run", help="Run the pipeline")
+    pdx = sub.add_parser("doctor", help="Check output contracts and metadata")
+    pdx.set_defaults(func=cmd_doctor)
     pr.add_argument("--config", required=True, help="Path to YAML config")
     pr.set_defaults(func=cmd_run)
 
