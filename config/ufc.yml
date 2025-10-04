@@ -2,6 +2,9 @@ data:
   name: ufc
   path: data/golden/ufc.csv
 
+keys:
+  primary: ["fight_id"]
+
 checks:
   round:
     min: 1
