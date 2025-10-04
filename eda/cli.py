@@ -5,6 +5,11 @@ import pandas as pd
 import sys 
 import json, hashlib, subprocess
 import numpy as np 
+import csv 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt 
+
 
 from datetime import datetime, timezone
 def _utc_now_iso_z() -> str:
@@ -19,7 +24,44 @@ def load_data(path:str) -> pd.DataFrame:
         return pd.read_parquet(path)
     raise ValueError(f"Unsupported file type: {ext}")
 
+def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    for c in df.select_dtypes(include="object").columns:
+        df[c] = df[c].astype(str).str.strip()
+    return df
 
+def _validate_csv_schema(path: str, expected_cols: list[str]) -> list[list]:
+    bad_rows = 0
+    samples = []
+    with open(path, newline="") as f:
+        rdr = csv.reader(f)
+        header = next(rdr, [])
+
+        # --- header names/order check ---
+        hdr_row = None
+        if header != expected_cols:
+            note = f"expected={expected_cols} got={header}"
+            table = os.path.splitext(os.path.basename(path))[0]
+            hdr_row = [table, "__table__", "schema_header_mismatch", 1, note]
+
+        # --- per-row field-count check ---
+        for i, row in enumerate(rdr, start=2):  # 1-based lines; 2 = first data line
+            if len(row) != len(expected_cols):
+                bad_rows += 1
+                if len(samples) < 5:
+                    samples.append((i, row))
+
+    os.makedirs("logs", exist_ok=True)
+    if samples:
+        with open("logs/schema_samples.txt", "w") as out:
+            for ln, r in samples:
+                out.write(f"line {ln}: {r}\n")
+
+    table = os.path.splitext(os.path.basename(path))[0]
+    rows = [[table, "__table__", "schema_bad_row_count", int(bad_rows), ""]]
+    if hdr_row:
+        rows.append(hdr_row)
+    return rows
 
 def ensure_dirs():
     for d in ["outputs", "plots", "reports", "logs"]:
@@ -91,10 +133,18 @@ def _apply_checks(df, table, checks):
 
         # allowed categories
         if "allowed" in spec:
-            allowed = {str(a) for a in spec["allowed"]}
-            invalid = (~s.isna()) & (~s.astype(str).isin(allowed))
+            allowed = {str(a).strip() for a in spec["allowed"]}
+            s_norm = s.astype(str).str.strip()
+            invalid = (~s.isna()) & (~s_norm.isin(allowed))  # ← use s_norm
             rows.append([table, col, "invalid_category_count", int(invalid.sum()), ""])
     return rows
+
+def _check_primary_key(df: pd.DataFrame, table: str, keys: list[str]) -> list[list]:
+    if not keys: 
+        return []
+    grp = df.groupby(keys, dropna=False).size()
+    viol = int((grp > 1).sum())
+    return [[table, "__table__", "duplicate_key_groups_count", viol, f"keys={keys}"]]
 
 
 def _topn_values(s, n=5):
@@ -112,7 +162,40 @@ def _sha256(path: str) -> str:
         for chunk in iter(lambda: f.read(8192), b""):
             h.update(chunk)
     return h.hexdigest()
-        
+
+def _save_series_bar(s: pd.Series, title: str, png_path: str, csv_path: str, xlabel: str, ylabel: str):
+    s.to_csv(csv_path, header=[ylabel])
+    plt.figure()
+    s.plot(kind="bar")
+    plt.title(title); plt.xlabel(xlabel); plt.ylabel(ylabel)
+    plt.tight_layout(); plt.savefig(png_path); plt.close()
+
+
+def _save_histogram(s: pd.Series, title: str, png_path: str, csv_path: str, bins: int = 10):
+    s = s.dropna().astype(float)
+    counts, edges = np.histogram(s, bins=bins)
+    pd.DataFrame({"bin_left": edges[:-1], "bin_right": edges[1:], "count": counts}).to_csv(csv_path, index=False)
+    plt.figure()
+    plt.hist(s, bins=edges)
+    plt.title(title); plt.xlabel("value"); plt.ylabel("count")
+    plt.tight_layout(); plt.savefig(png_path); plt.close()
+
+
+def _save_boxplot(s: pd.Series, title: str, png_path: str, stats_path: str):
+    s = s.dropna().astype(float)
+    stats = {
+        "min": float(s.min()),
+        "q25": float(s.quantile(0.25)),
+        "median": float(s.median()),
+        "q75": float(s.quantile(0.75)),
+        "max": float(s.max()),
+    }
+    pd.DataFrame([stats]).to_csv(stats_path, index=False)
+    plt.figure()
+    plt.boxplot(s, vert=True, whis=1.5)
+    plt.title(title); plt.ylabel("value")
+    plt.tight_layout(); plt.savefig(png_path); plt.close()
+
 def _write_metadata(config_path: str, data_path: str) -> dict:
     meta = {
         "started_at": _utc_now_iso_z(),
@@ -143,8 +226,6 @@ def _finish_metadata(meta: dict) -> None:
         json.dump(meta, f, indent=2)
 
 
-
-
 def cmd_run(args):
     ensure_dirs()
     cfg = yaml.safe_load(open(args.config))
@@ -157,8 +238,19 @@ def cmd_run(args):
 
     meta = _write_metadata(args.config, data_path)
 
+    # schema check (CSV only)
+    if data_path.lower().endswith(".csv"):
+        schema_rows = _validate_csv_schema(data_path, ['fight_id', 'winner', 'method', 'round', 'time'])
+    else:
+        schema_rows = []
+
     df = load_data(data_path)
+    df = _normalize_frame(df)
     dq = compute_minimal_metrics(df, table)
+
+    if schema_rows:
+        dq = pd.concat([dq, pd.DataFrame(schema_rows, columns=["table","column","metric","value","note"])],
+                   ignore_index=True)
 
     # apply optional validation rules from YAML 
     checks = cfg.get("checks") or {}
@@ -169,8 +261,46 @@ def cmd_run(args):
             ignore_index=True
         )
 
+    # primary-key duplicate detection
+    key_spec = (cfg.get("keys") or {}).get("primary") or []
+    pk_rows = _check_primary_key(df, table, key_spec)
+    if pk_rows:
+        dq = pd.concat([dq, pd.DataFrame(pk_rows, columns=["table","column","metric","value","note"])],
+                       ignore_index=True)
+
+
+
     dq.to_csv("outputs/data_quality_report.csv", index=False)
     print("wrote outputs/data_quality_report.csv")
+
+    # 5 validated plots (each with a companion values/stats file)
+    # 1) Missingness by column (bar)
+    miss = df.isna().mean().sort_values(ascending=False)
+    _save_series_bar(miss, "Missingness by Column",
+                     "plots/missingness.png", "plots/missingness_values.csv",
+                     "column", "missing_pct")
+
+    # 2) Unique count by column (bar)
+    uniq = df.nunique(dropna=True).sort_values(ascending=False)
+    _save_series_bar(uniq, "Unique Count by Column",
+                     "plots/unique_count.png", "plots/unique_count_values.csv",
+                     "column", "unique_count")
+
+    # 3) Histogram of time (if present)
+    if "time" in df.columns:
+        _save_histogram(df["time"], "Histogram: time",
+                        "plots/hist_time.png", "plots/hist_time_values.csv")
+
+        # 4) Boxplot of time
+        _save_boxplot(df["time"], "Boxplot: time",
+                      "plots/box_time.png", "plots/box_time_stats.csv")
+
+    # 5) Top-5 method values (bar)
+    if "method" in df.columns:
+        top = _topn_values(df["method"], n=5)
+        _save_series_bar(top.set_index("value")["count"], "Top-5: method",
+                         "plots/top_method.png", "plots/top_method_values.csv",
+                         "method", "count")
 
     _finish_metadata(meta)
 
