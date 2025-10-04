@@ -359,34 +359,66 @@ def cmd_run(args):
 def cmd_doctor(args):
     problems = []
 
-    # Contract CSV exists + headers + key metric
+    # 1) Contract CSV exists, has exact headers, and includes row_count
     csv_path = "outputs/data_quality_report.csv"
-    expected = ["table","column","metric","value","note"]
+    expected = ["table", "column", "metric", "value", "note"]
     if not os.path.exists(csv_path):
         problems.append(f"missing {csv_path}")
+        dq = None
     else:
-        with open(csv_path, newline="") as f:
-            hdr = next(csv.reader(f), [])
-        if hdr != expected:
-            problems.append(f"bad headers in {csv_path}: {hdr} != {expected}")
-        dq = pd.read_csv(csv_path)
-        if dq.query("column=='__table__' and metric=='row_count'").empty:
-            problems.append("row_count metric missing in contract CSV")
+        try:
+            dq = pd.read_csv(csv_path)
+        except Exception as e:
+            problems.append(f"cannot read {csv_path}: {e}")
+            dq = None
+        else:
+            if list(dq.columns) != expected:
+                problems.append(f"bad headers in {csv_path}: {list(dq.columns)} != {expected}")
+            # Use boolean indexing (safer than .query strings)
+            has_row_count = not dq[(dq["column"] == "__table__") & (dq["metric"] == "row_count")].empty
+            if not has_row_count:
+                problems.append("row_count metric missing in contract CSV")
 
-    # Metadata exists + required keys + UTC timestamps
+    # 2) Metadata exists + required keys + UTC timestamps
     meta_path = "logs/run_metadata.json"
-    must = {"started_at","ended_at","python","pandas","numpy","config_path","data_path","data_sha256"}
+    must = {"started_at", "ended_at", "python", "pandas", "numpy", "config_path", "data_path", "data_sha256"}
     if not os.path.exists(meta_path):
         problems.append(f"missing {meta_path}")
     else:
-        meta = json.load(open(meta_path))
-        missing = sorted(list(must - set(meta.keys())))
-        if missing:
-            problems.append(f"metadata missing keys: {missing}")
-        for k in ("started_at","ended_at"):
-            v = meta.get(k, "")
-            if not (isinstance(v, str) and (v.endswith('Z') or v.endswith('+00:00'))):
-                problems.append(f"{k} not UTC/RFC3339: {v}")
+        try:
+            meta = json.load(open(meta_path))
+        except Exception as e:
+            problems.append(f"cannot read {meta_path}: {e}")
+        else:
+            missing = sorted(list(must - set(meta.keys())))
+            if missing:
+                problems.append(f"metadata missing keys: {missing}")
+            for k in ("started_at", "ended_at"):
+                v = meta.get(k, "")
+                if not (isinstance(v, str) and (v.endswith("Z") or v.endswith("+00:00"))):
+                    problems.append(f"{k} not UTC/RFC3339: {v}")
+
+    # 3) Plots: exactly 5 PNGs + companion *_values.csv or *_stats.csv for each
+    import glob
+    pngs = sorted(glob.glob("plots/*.png"))
+    if len(pngs) != 5:
+        problems.append(f"need 5 plots, found {len(pngs)}: {pngs}")
+    for p in pngs:
+        stem = os.path.splitext(os.path.basename(p))[0]
+        candidate_values = os.path.join("plots", f"{stem}_values.csv")
+        candidate_stats  = os.path.join("plots", f"{stem}_stats.csv")
+        if not (os.path.exists(candidate_values) or os.path.exists(candidate_stats)):
+            problems.append(f"missing companion values/stats for {p}")
+
+    # 4) Memos exist and include Sources footer lines
+    for rp in ["reports/findings_memo.md", "reports/next_actions.md"]:
+        if not os.path.exists(rp):
+            problems.append(f"missing {rp}")
+        else:
+            txt = open(rp, encoding="utf-8").read()
+            for needle in ["## Sources", "- outputs/data_quality_report.csv", "- logs/run_metadata.json"]:
+                if needle not in txt:
+                    problems.append(f"missing '{needle}' in {rp}")
 
     if problems:
         print("❌ doctor found issues:")
