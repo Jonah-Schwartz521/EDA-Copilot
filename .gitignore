@@ -19,4 +19,44 @@ reports/*
 !reports/.gitkeep
 
 # OS
-.DS_Store``
+.DS_Store
+EOF
+# env
+.venv/
+__pycache__/
+*.py[cod]
+
+# IDE
+.vscode/
+
+# packaging/build artifacts
+*.egg-info/
+build/
+dist/
+
+# data (track only tiny fixtures)
+data/*
+!data/.gitkeep
+!data/golden/
+!data/golden/ufc.csv
+!data/fixtures/
+!data/fixtures/ufc_bad.csv
+
+# outputs (generated)
+outputs/*
+!outputs/.gitkeep
+
+# plots (generated)
+plots/*
+!plots/.gitkeep
+
+# logs (generated)
+logs/*
+!logs/.gitkeep
+
+# reports (generated)
+reports/*
+!reports/.gitkeep
+
+# OS
+.DS_Store
