@@ -8,7 +8,9 @@ import numpy as np
 import csv 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt 
+
+import matplotlib.pyplot as plt
+from typing import Optional
 
 
 from datetime import datetime, timezone
@@ -16,12 +18,15 @@ def _utc_now_iso_z() -> str:
     # timezone-aware UTC, formatted as RFC3339 "Z" (Zulu)
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
-def load_data(path:str) -> pd.DataFrame:
+def load_data(path: str, sheet: Optional[str] = None) -> pd.DataFrame:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".csv":
         return pd.read_csv(path)
     elif ext == ".parquet":
         return pd.read_parquet(path)
+    elif ext in (".xlsx", ".xls"):
+        # pandas chooses the right engine (requires openpyxl for .xlsx)
+        return pd.read_excel(path, sheet_name=(sheet if sheet is not None else 0))
     raise ValueError(f"Unsupported file type: {ext}")
 
 def _normalize_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -335,7 +340,7 @@ def _doctor_check_plots(dq: pd.DataFrame, cfg: dict) -> list[str]:
     return problems
 
 
-# --- End inserted helpers ---
+# End inserted helpers 
 
 
 # --- Begin inserted renderer for config-driven plots ---
@@ -490,6 +495,7 @@ def cmd_run(args):
     cfg = yaml.safe_load(open(args.config))
     table = cfg["data"]["name"]
     data_path = cfg["data"]["path"]
+    sheet = (cfg.get("data") or {}).get("sheet")
 
     if not os.path.exists(data_path):
         sys.stderr.write(f"[ERROR] data file not found: {data_path}\n")
@@ -504,7 +510,7 @@ def cmd_run(args):
     else:
         schema_rows = []
 
-    df = load_data(data_path)
+    df = load_data(data_path, sheet=sheet)
     df = _normalize_frame(df)
     dq = compute_minimal_metrics(df, table)
 
