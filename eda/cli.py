@@ -288,9 +288,10 @@ def cmd_run(args):
 
     meta = _write_metadata(args.config, data_path)
 
-    # schema check (CSV only)
-    if data_path.lower().endswith(".csv"):
-        schema_rows = _validate_csv_schema(data_path, ['fight_id', 'winner', 'method', 'round', 'time'])
+  # schema check (CSV only) — now driven by YAML
+    expected = (cfg.get("schema") or {}).get("expected_columns")
+    if data_path.lower().endswith(".csv") and expected:
+        schema_rows = _validate_csv_schema(data_path, expected)
     else:
         schema_rows = []
 
