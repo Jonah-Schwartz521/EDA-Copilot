@@ -1,0 +1,5 @@
+fight_id,winner,method,round,time
+1,A,KO,1,123
+2,B,Decision,3,300
+3,C,Submission,3,300
+4,D,KO,2,240

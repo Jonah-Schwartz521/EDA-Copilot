@@ -1,0 +1,5 @@
+id,visit_date,dept,payer,amount
+1,2024-01-05,ENT,Medicare,-10
+1,2024-01-05,ENT,Medicare,30000
+5,2024-01-10,XRAY,Unknown,100
+6,2024-01-10,ENT,Commercial,200
