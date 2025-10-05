@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eda-copilot"
+version = "0.1.0"
+description = "Deterministic EDA with contract CSV + auto-written memos"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=2.3,<3",
+  "numpy>=2.1,<3",
+  "matplotlib>=3.8,<4",
+  "PyYAML>=6,<7",
+  "streamlit>=1.37.<2".
+]
+
+[project.scripts]
+eda = "eda.cli:main"
+
+[tool.setuptools]
+packages = ["eda"] 
