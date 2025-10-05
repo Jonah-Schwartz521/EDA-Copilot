@@ -196,6 +196,215 @@ def _save_boxplot(s: pd.Series, title: str, png_path: str, stats_path: str):
     plt.title(title); plt.ylabel("value")
     plt.tight_layout(); plt.savefig(png_path); plt.close()
 
+
+# --- Begin inserted helpers for config-driven plot file naming and doctor checks ---
+def _expected_plot_files(table: str, spec: dict) -> tuple[str, str, str]:
+    """Return (kind, png_path, values_path_or_stats_path)."""
+    k = spec.get("kind")
+    if k == "missingness":
+        return k, f"plots/{table}_missingness.png", f"plots/{table}_missingness_values.csv"
+    if k == "topn":
+        col = spec["column"]
+        return k, f"plots/{table}_topn_{col}.png", f"plots/{table}_topn_{col}_values.csv"
+    if k == "numeric_hist":
+        col = spec["column"]
+        return k, f"plots/{table}_hist_{col}.png", f"plots/{table}_hist_{col}_values.csv"
+    if k == "numeric_box":
+        col = spec["column"]
+        return k, f"plots/{table}_box_{col}.png", f"plots/{table}_box_{col}_stats.csv"
+    if k == "cardinality_topk":
+        return k, f"plots/{table}_cardinality_topk.png", f"plots/{table}_cardinality_topk_values.csv"
+    return k, None, None
+
+
+def _doctor_check_plots(dq: pd.DataFrame, cfg: dict) -> list[str]:
+    """Return list of human-readable problems; empty if all good."""
+    problems = []
+    data = cfg.get("data") or {}
+    table = data.get("name", "table")
+    plots = cfg.get("plots") or []
+
+    # Normalize DQ for lookups
+    dq = dq.copy()
+    dq["metric"] = dq["metric"].astype(str)
+    dq["column"] = dq["column"].astype(str)
+
+    for spec in plots:
+        kind, png_path, vals_path = _expected_plot_files(table, spec)
+        if not kind:
+            problems.append(f"unknown plot kind in config: {spec}")
+            continue
+        if not os.path.exists(png_path):
+            problems.append(f"missing PNG for {kind}: {png_path}")
+        if not os.path.exists(vals_path):
+            problems.append(f"missing values/stats file for {kind}: {vals_path}")
+            # if values missing, skip deeper comparison to avoid exceptions
+            continue
+
+        try:
+            vals = pd.read_csv(vals_path)
+        except Exception as e:
+            problems.append(f"cannot read {vals_path}: {e}")
+            continue
+
+        # Kind-specific content checks
+        if kind == "missingness":
+            # Expect columns: column,missing_pct
+            req_cols = {"column", "missing_pct"}
+            if not req_cols.issubset(set(vals.columns)):
+                problems.append(f"{vals_path} missing columns {req_cols}")
+            else:
+                miss_dq = dq[(dq["metric"] == "missing_pct") & (dq["column"] != "__table__")][["column","value"]].copy()
+                miss_dq["value"] = miss_dq["value"].astype(float).round(6)
+                vals["missing_pct"] = vals["missing_pct"].astype(float).round(6)
+                merged = vals.merge(miss_dq, on="column", how="left", suffixes=("_vals","_dq"))
+                bad = merged[merged["missing_pct"] != merged["value"]]
+                if not bad.empty:
+                    problems.append(f"{vals_path} does not match DQ missing_pct for columns: {bad['column'].tolist()}")
+
+        elif kind == "topn":
+            # Expect: value,count columns, compare to DQ topk pairs
+            col = spec["column"]
+            if not {"value","count"}.issubset(set(vals.columns)):
+                problems.append(f"{vals_path} must have columns ['value','count']")
+            else:
+                # Build expected ordered pairs from DQ
+                exp_pairs = []
+                rank = 1
+                while True:
+                    v = dq.loc[(dq["column"]==col) & (dq["metric"]==f"top{rank}_value"), "value"]
+                    c = dq.loc[(dq["column"]==col) & (dq["metric"]==f"top{rank}_count"), "value"]
+                    if v.empty or c.empty:
+                        break
+                    # c can be stored as float in CSV; cast robustly
+                    exp_pairs.append((str(v.iloc[0]), int(float(c.iloc[0]))))
+                    rank += 1
+                got_pairs = list(zip(vals["value"].astype(str).tolist(),
+                                     vals["count"].astype(int).tolist()))
+                if exp_pairs[:len(got_pairs)] != got_pairs:
+                    problems.append(f"{vals_path} topN differs from DQ for column '{col}'")
+
+        elif kind == "numeric_box":
+            # Expect: single-row stats with min,q25,median,q75,max
+            required = ["min","q25","median","q75","max"]
+            missing = [c for c in required if c not in vals.columns]
+            if missing:
+                problems.append(f"{vals_path} missing columns {missing}")
+            else:
+                col = spec["column"]
+                # DQ has per-metric rows
+                def _dq_val(m):
+                    s = dq.loc[(dq["column"]==col) & (dq["metric"]==m), "value"]
+                    return None if s.empty else float(s.iloc[0])
+                exp = {m: _dq_val(m) for m in required}
+                got = {m: float(vals[m].iloc[0]) for m in required}
+                # round to avoid tiny FP diffs
+                exp = {k: (None if v is None else round(v, 6)) for k,v in exp.items()}
+                got = {k: round(v, 6) for k,v in got.items()}
+                diffs = [k for k in required if exp[k] is not None and exp[k] != got[k]]
+                if diffs:
+                    problems.append(f"{vals_path} stats differ from DQ for {col}: {diffs}")
+
+        elif kind == "numeric_hist":
+            # Expect: bin_left,bin_right,count; sum(count) == DQ count_non_null
+            need = {"bin_left","bin_right","count"}
+            if not need.issubset(set(vals.columns)):
+                problems.append(f"{vals_path} missing columns {need}")
+            else:
+                col = spec["column"]
+                cnt = dq.loc[(dq["column"]==col) & (dq["metric"]=="count_non_null"), "value"]
+                if not cnt.empty:
+                    expected = int(float(cnt.iloc[0]))
+                    got = int(vals["count"].sum())
+                    if expected != got:
+                        problems.append(f"{vals_path} total count {got} != DQ count_non_null {expected} for {col}")
+
+        elif kind == "cardinality_topk":
+            # Expect: column,unique_count; check counts match DQ
+            need = {"column","unique_count"}
+            if not need.issubset(set(vals.columns)):
+                problems.append(f"{vals_path} missing columns {need}")
+            else:
+                uq = dq[dq["metric"]=="unique_count"][["column","value"]].copy()
+                uq["value"] = uq["value"].astype(float)
+                merged = vals.merge(uq, on="column", how="left")
+                bad = merged[ merged["unique_count"].astype(float) != merged["value"] ]
+                if not bad.empty:
+                    problems.append(f"{vals_path} unique_count mismatches for: {bad['column'].tolist()}")
+
+    return problems
+
+
+# --- End inserted helpers ---
+
+
+# --- Begin inserted renderer for config-driven plots ---
+def _render_plots(df: pd.DataFrame, table: str, plots_spec: list[dict]):
+    os.makedirs("plots", exist_ok=True)
+    for spec in plots_spec or []:
+        kind = spec.get("kind")
+        if kind == "missingness":
+            miss = df.isna().mean().astype(float)
+            vals = miss.reset_index()
+            vals.columns = ["column","missing_pct"]
+            vals = vals.sort_values("missing_pct", ascending=False)
+            _, png, csvp = _expected_plot_files(table, spec)
+            vals.to_csv(csvp, index=False)
+            plt.figure(); plt.bar(vals["column"], vals["missing_pct"])
+            plt.title("Missingness by Column"); plt.xlabel("column"); plt.ylabel("missing_pct")
+            plt.xticks(rotation=45, ha="right"); plt.tight_layout(); plt.savefig(png); plt.close()
+
+        elif kind == "topn":
+            col = spec["column"]
+            n = int(spec.get("n", 5))
+            top = _topn_values(df[col], n=n)
+            vals = top[["value","count"]].copy()
+            _, png, csvp = _expected_plot_files(table, spec)
+            vals.to_csv(csvp, index=False)
+            plt.figure(); plt.bar(vals["value"].astype(str), vals["count"].astype(int))
+            plt.title(f"Top-{n}: {col}"); plt.xlabel(col); plt.ylabel("count")
+            plt.xticks(rotation=45, ha="right"); plt.tight_layout(); plt.savefig(png); plt.close()
+
+        elif kind == "numeric_hist":
+            col = spec["column"]
+            bins = int(spec.get("bins", 10))
+            s = pd.to_numeric(df[col], errors="coerce").dropna()
+            counts, edges = np.histogram(s, bins=bins)
+            vals = pd.DataFrame({"bin_left": edges[:-1], "bin_right": edges[1:], "count": counts})
+            _, png, csvp = _expected_plot_files(table, spec)
+            vals.to_csv(csvp, index=False)
+            plt.figure(); plt.hist(s, bins=edges)
+            plt.title(f"Histogram: {col}"); plt.xlabel("value"); plt.ylabel("count")
+            plt.tight_layout(); plt.savefig(png); plt.close()
+
+        elif kind == "numeric_box":
+            col = spec["column"]
+            s = pd.to_numeric(df[col], errors="coerce").dropna()
+            stats = {
+                "min": float(s.min()),
+                "q25": float(s.quantile(0.25)),
+                "median": float(s.median()),
+                "q75": float(s.quantile(0.75)),
+                "max": float(s.max()),
+            }
+            _, png, statsp = _expected_plot_files(table, spec)
+            pd.DataFrame([stats]).to_csv(statsp, index=False)
+            plt.figure(); plt.boxplot(s, vert=True, whis=1.5)
+            plt.title(f"Boxplot: {col}"); plt.ylabel("value")
+            plt.tight_layout(); plt.savefig(png); plt.close()
+
+        elif kind == "cardinality_topk":
+            k = int(spec.get("k", 10))
+            uniq = df.nunique(dropna=True).sort_values(ascending=False).head(k)
+            vals = uniq.reset_index()
+            vals.columns = ["column","unique_count"]
+            _, png, csvp = _expected_plot_files(table, spec)
+            vals.to_csv(csvp, index=False)
+            plt.figure(); plt.bar(vals["column"], vals["unique_count"])
+            plt.title("Cardinality (top-k)"); plt.xlabel("column"); plt.ylabel("unique_count")
+            plt.xticks(rotation=45, ha="right"); plt.tight_layout(); plt.savefig(png); plt.close()
+# --- End inserted renderer ---
+
 def _write_metadata(config_path: str, data_path: str) -> dict:
     meta = {
         "started_at": _utc_now_iso_z(),
@@ -326,34 +535,8 @@ def cmd_run(args):
 
     _write_reports()
 
-    # 5 validated plots (each with a companion values/stats file)
-    # 1) Missingness by column (bar)
-    miss = df.isna().mean().sort_values(ascending=False)
-    _save_series_bar(miss, "Missingness by Column",
-                     "plots/missingness.png", "plots/missingness_values.csv",
-                     "column", "missing_pct")
-
-    # 2) Unique count by column (bar)
-    uniq = df.nunique(dropna=True).sort_values(ascending=False)
-    _save_series_bar(uniq, "Unique Count by Column",
-                     "plots/unique_count.png", "plots/unique_count_values.csv",
-                     "column", "unique_count")
-
-    # 3) Histogram of time (if present)
-    if "time" in df.columns:
-        _save_histogram(df["time"], "Histogram: time",
-                        "plots/hist_time.png", "plots/hist_time_values.csv")
-
-        # 4) Boxplot of time
-        _save_boxplot(df["time"], "Boxplot: time",
-                      "plots/box_time.png", "plots/box_time_stats.csv")
-
-    # 5) Top-5 method values (bar)
-    if "method" in df.columns:
-        top = _topn_values(df["method"], n=5)
-        _save_series_bar(top.set_index("value")["count"], "Top-5: method",
-                         "plots/top_method.png", "plots/top_method_values.csv",
-                         "method", "count")
+    # Render plots declared in the profile (reproducible, with values/stats files)
+    _render_plots(df, table, cfg.get("plots") or [])
 
     _finish_metadata(meta)
 
@@ -399,17 +582,25 @@ def cmd_doctor(args):
                 if not (isinstance(v, str) and (v.endswith("Z") or v.endswith("+00:00"))):
                     problems.append(f"{k} not UTC/RFC3339: {v}")
 
-    # 3) Plots: exactly 5 PNGs + companion *_values.csv or *_stats.csv for each
-    import glob
-    pngs = sorted(glob.glob("plots/*.png"))
-    if len(pngs) != 5:
-        problems.append(f"need 5 plots, found {len(pngs)}: {pngs}")
-    for p in pngs:
-        stem = os.path.splitext(os.path.basename(p))[0]
-        candidate_values = os.path.join("plots", f"{stem}_values.csv")
-        candidate_stats  = os.path.join("plots", f"{stem}_stats.csv")
-        if not (os.path.exists(candidate_values) or os.path.exists(candidate_stats)):
-            problems.append(f"missing companion values/stats for {p}")
+    # 3) Verify plots against config & DQ
+    cfg = {}
+    cfg_path = None
+    if os.path.exists(meta_path):
+        try:
+            meta = json.load(open(meta_path))
+            cfg_path = meta.get("config_path")
+        except Exception:
+            cfg_path = None
+    if cfg_path and os.path.exists(cfg_path):
+        try:
+            cfg = yaml.safe_load(open(cfg_path)) or {}
+        except Exception as e:
+            problems.append(f"cannot load config from metadata config_path={cfg_path}: {e}")
+    else:
+        problems.append("metadata missing valid config_path; cannot verify plots")
+
+    if isinstance(dq, pd.DataFrame) and cfg:
+        problems.extend(_doctor_check_plots(dq, cfg))
 
     # 4) Memos exist and include Sources footer lines
     for rp in ["reports/findings_memo.md", "reports/next_actions.md"]:
