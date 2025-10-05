@@ -1,0 +1,5 @@
+enc_id,age,sex,drg,payer,los,charges
+1,45,F,291,Medicare,3,12000
+2,64,M,470,Commercial,5,38000
+3,29,F,194,Medicaid,2,8000
+4,51,M,194,SelfPay,1,5000

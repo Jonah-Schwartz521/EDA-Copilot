@@ -1,0 +1,5 @@
+enc_id,age,sex,drg,payer,los,charges
+1,200,F,291,Medicare,-1,9999999
+1,200,F,291,Medicare,-1,9999999
+5,40,X,999,Unknown,3,300
+6,50,M,194,Commercial,730,100

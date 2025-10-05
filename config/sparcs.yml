@@ -1,0 +1,18 @@
+data:
+  name: sparcs
+  path: data/golden/sparcs.csv
+
+schema:
+  expected_columns: [enc_id, age, sex, drg, payer, los, charges]
+
+keys:
+  primary: [enc_id]
+
+checks:
+  age:     { min: 0, max: 120 }
+  los:     { min: 0, max: 60 }
+  charges: { min: 0, max: 100000 }
+  sex:
+    allowed: [M, F]
+  payer:
+    allowed: [Medicare, Medicaid, Commercial, SelfPay]
