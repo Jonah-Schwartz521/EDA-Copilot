@@ -1,0 +1,31 @@
+data:
+  name: ent
+  path: data/golden/ent.csv
+
+schema:
+  expected_columns: [id, visit_date, dept, payer, amount]
+
+keys:
+  primary: [id]
+
+checks:
+  amount: { min: 0, max: 20000 }
+  dept:
+    allowed: [ENT, AUDIO, SURG]
+  payer:
+    allowed: [Medicare, Medicaid, Commercial, SelfPay]
+
+# config/ent.yml
+plots:
+  - kind: missingness
+  - kind: topn
+    column: dept
+    n: 5
+  - kind: topn
+    column: payer
+    n: 5
+  - kind: numeric_hist
+    column: amount
+    bins: 20
+  - kind: numeric_box
+    column: amount

@@ -20,3 +20,16 @@ checks:
       - KO
       - Decision
       - Submission
+
+plots:
+  - kind: missingness
+  - kind: topn
+    column: method
+    n: 5
+  - kind: numeric_hist
+    column: time
+    bins: 20
+  - kind: numeric_box
+    column: time
+  - kind: cardinality_topk
+    k: 10
