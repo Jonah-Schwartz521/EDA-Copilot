@@ -40,4 +40,19 @@ reports/*
 
 # UI-generated configs
 config/uploads/*
-config/tmp*.yml
+config/tmp*.yml# env & caches
+.venv/
+bin/.venv/
+__pycache__/
+.ipynb_checkpoints/
+.pytest_cache/
+*.egg-info/
+
+# data & logs (keep samples only)
+data/raw/
+data/processed/
+logs/
+
+# temp/hash debris
+*.hash*.txt
+.ent_hash*.txt

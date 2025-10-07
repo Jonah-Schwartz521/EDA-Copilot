@@ -2,10 +2,44 @@ import os
 import io
 from pathlib import Path
 import subprocess
+import json
+import re
 
 import pandas as pd
 import yaml
 import streamlit as st
+from eda.llm import build_summary_payload, call_llm
+
+import requests
+
+def _ollama_alive(base: str) -> bool:
+    try:
+        r = requests.get(base.rstrip("/") + "/api/tags", timeout=2.5)
+        return r.ok
+    except Exception:
+        return False
+
+def _secret_or_env(key: str, default: str):
+    # Use Streamlit secrets if present; otherwise fall back to env; otherwise default
+    try:
+        # accessing st.secrets may raise if no secrets file; protect with try/except
+        return st.secrets.get(key, os.getenv(key, default))  # type: ignore[attr-defined]
+    except Exception:
+        return os.getenv(key, default)
+
+_default_provider = _secret_or_env("LLM_PROVIDER", "ollama")
+_default_model    = _secret_or_env("LLM_MODEL", "llama3.2:3b")
+_default_base     = _secret_or_env("OLLAMA_BASE_URL", "http://localhost:11434")
+
+# Auto-switch to Basic if Ollama isn't reachable
+if _default_provider.lower() == "ollama" and not _ollama_alive(_default_base):
+    st.warning("Ollama is not reachable; falling back to Basic (no-LLM) summary.")
+    os.environ["LLM_PROVIDER"] = "rule"
+else:
+    os.environ["LLM_PROVIDER"] = _default_provider
+
+os.environ["LLM_MODEL"] = _default_model
+os.environ["OLLAMA_BASE_URL"] = _default_base
 
 # Page/setup
 st.set_page_config(page_title="EDA Copilot", layout="wide")
@@ -131,6 +165,9 @@ if run:
                     st.code(r.stderr)
             else:
                 st.success("EDA run completed.")
+            # If the run failed, stop so we don't try to render outputs/plots directories that may not exist
+            if r.returncode != 0:
+                st.stop()
 
         # Show outputs
         if os.path.exists("outputs/data_quality_report.csv"):
@@ -138,11 +175,13 @@ if run:
             st.dataframe(pd.read_csv("outputs/data_quality_report.csv"))
 
         # Show any plots generated for this dataset
-        plot_files = sorted([p for p in os.listdir("plots") if p.startswith(f"{name}_") and p.endswith(".png")])
-        if plot_files:
-            st.subheader("Plots")
-            for p in plot_files:
-                st.image(os.path.join("plots", p), caption=p)
+        plot_dir = "plots"
+        if os.path.isdir(plot_dir):
+            plot_files = sorted([p for p in os.listdir(plot_dir) if p.startswith(f"{name}_") and p.endswith(".png")])
+            if plot_files:
+                st.subheader("Plots")
+                for p in plot_files:
+                    st.image(os.path.join(plot_dir, p), caption=p)
 
 if doctor:
     r = subprocess.run(["python", "-m", "eda", "doctor"], capture_output=True, text=True)
@@ -151,3 +190,175 @@ if doctor:
     else:
         st.error("Doctor found issues")
     st.code(r.stdout or r.stderr)
+
+
+# AI Summary (optional)
+
+st.header("AI Summary (optional)")
+inc_sample = st.checkbox(
+    "Include up to 30 sample rows in the prompt",
+    value=False,
+    help="Turn OFF for sensitive data. The LLM can still summarize using the contract CSV.",
+)
+summ_btn = st.button("Generate AI Summary")
+
+# Provider picker (so non‑technical users can stick to free/basic)
+st.caption("Choose a provider: **Basic** works offline; **Ollama** uses a local model; **OpenAI** uses your own API key.")
+prov = st.selectbox(
+    "AI provider",
+    ["Basic (free)", "Ollama (local)", "OpenAI (cloud)"],
+    index=0,
+    help="Basic = built-in rule-based summary. Ollama requires a local server. OpenAI requires an API key.",
+)
+
+model = None
+api_key = None
+api_base = None
+
+if "Ollama" in prov:
+    model = st.text_input("Ollama model", value=_default_model)
+    api_base = st.text_input("Ollama base URL", value=_default_base)
+elif "OpenAI" in prov:
+    model = st.text_input("OpenAI model", value=os.getenv("LLM_MODEL", "gpt-4o-mini"))
+    api_key = st.text_input("OpenAI API key", type="password", value=os.getenv("OPENAI_API_KEY", ""))
+    api_base = st.text_input("OpenAI base URL (optional)", value=os.getenv("OPENAI_BASE_URL", ""))
+
+
+def _hash_file(p: str) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _build_markdown_from_json(data: dict) -> str:
+    """Render a clean Markdown summary from the model's structured JSON."""
+    def _section(title: str, items):
+        if not items:
+            return ""
+        lines = [f"## {title}"] + [f"- {str(x)}" for x in items]
+        return "\n".join(lines) + "\n\n"
+
+    title = data.get("title", "AI Summary")
+    one = data.get("one_line")
+    blurb = data.get("blurb")
+    domain = data.get("domain_guess")
+    md_parts = [f"# {title}\n"]
+    if one:
+        md_parts.append(f"> {one}\n\n")
+    if blurb:
+        md_parts.append(f"{blurb}\n\n")
+    if domain:
+        md_parts.append(f"**Domain guess:** {domain}\n\n")
+    md_parts.append(_section("Key facts", data.get("key_facts", [])))
+    md_parts.append(_section("Issues", data.get("issues", [])))
+    md_parts.append(_section("Next actions", data.get("actions", [])))
+    md_parts.append(_section("Open questions", data.get("questions", [])))
+    return "".join([p for p in md_parts if p])
+
+
+def _extract_json_from_text(text: str):
+    """Try to parse JSON even if wrapped in ```json fences or with extra text."""
+    if not text:
+        return None
+    # 1) Look for ```json ... ``` fenced block
+    m = re.search(r"```(?:json|javascript)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    candidate = None
+    if m:
+        candidate = m.group(1)
+    else:
+        # 2) Brace-matching: find first {...} block
+        start = text.find("{")
+        if start != -1:
+            depth = 0
+            for i, ch in enumerate(text[start:], start=start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidate = text[start : i + 1]
+                        break
+    if candidate:
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+    # 3) Last resort: try raw text
+    try:
+        return json.loads(text)
+    except Exception:
+        return None
+
+
+if summ_btn:
+    dq_path = "outputs/data_quality_report.csv"
+    if not os.path.exists(dq_path):
+        st.error("Run EDA first so the contract CSV exists.")
+    else:
+        # Build a minimal cfg dict for payload (use current UI selections)
+        cfg_for_llm = _build_cfg_dict() if uploaded else {"data": {"name": name, "path": f"data/uploads/{name}.csv"}}
+        payload = build_summary_payload(cfg_for_llm)
+        if not inc_sample:
+            payload["sample_rows"] = None  # privacy by default
+
+        # Map picker to provider id + safe fallbacks
+        provider = "rule"  # default: free/basic
+        if "Ollama" in prov:
+            provider = "ollama"
+            # If Ollama is selected but not reachable, hard-fallback to rule so the UI always works
+            if not _ollama_alive(api_base or _default_base):
+                st.warning("Ollama is not reachable; using Basic (free) summary instead.")
+                provider = "rule"
+        elif "OpenAI" in prov:
+            if not api_key:
+                st.warning("OpenAI API key is empty; falling back to Basic (free) summary.")
+                provider = "rule"
+            else:
+                provider = "openai"
+
+        # Call provider-agnostic LLM
+        res = call_llm(
+            payload,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            api_base=api_base,
+        )
+
+        # Prefer structured JSON if present; otherwise try to extract JSON from text; else use text
+        data = res.get("json")
+        text = res.get("text")
+
+        # Normalize: if provider put JSON in a string or code fences, parse it
+        if isinstance(data, str):
+            data = _extract_json_from_text(data)
+        if not data and text:
+            data = _extract_json_from_text(text)
+
+        if data:
+            md = _build_markdown_from_json(data)
+            raw_payload = json.dumps(data, indent=2)
+        else:
+            md = text or "No summary content returned."
+            raw_payload = text or ""
+
+        # Cache + display strictly as Markdown by default
+        cache_path = Path(f"reports/ai_summary_{name}_{_hash_file(dq_path)[:12]}.md")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(md, encoding="utf-8")
+
+        st.markdown(md)
+        st.caption(f"Provider: {provider} · Model: {model or 'auto'}")
+        st.download_button(
+            label="Download AI summary (Markdown)",
+            data=md,
+            file_name=cache_path.name,
+            mime="text/markdown",
+        )
+        # Raw payload only in an expander for debugging
+        with st.expander("Raw model response"):
+            st.code(raw_payload or "<empty>")
+        st.success(f"Saved to {cache_path}")

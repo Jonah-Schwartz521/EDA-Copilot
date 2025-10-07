@@ -42,14 +42,14 @@ def _validate_csv_schema(path: str, expected_cols: list[str]) -> list[list]:
         rdr = csv.reader(f)
         header = next(rdr, [])
 
-        # --- header names/order check ---
+        # header names/order check 
         hdr_row = None
         if header != expected_cols:
             note = f"expected={expected_cols} got={header}"
             table = os.path.splitext(os.path.basename(path))[0]
             hdr_row = [table, "__table__", "schema_header_mismatch", 1, note]
 
-        # --- per-row field-count check ---
+        # per-row field-count check 
         for i, row in enumerate(rdr, start=2):  # 1-based lines; 2 = first data line
             if len(row) != len(expected_cols):
                 bad_rows += 1
@@ -202,7 +202,7 @@ def _save_boxplot(s: pd.Series, title: str, png_path: str, stats_path: str):
     plt.tight_layout(); plt.savefig(png_path); plt.close()
 
 
-# --- Begin inserted helpers for config-driven plot file naming and doctor checks ---
+# Begin inserted helpers for config-driven plot file naming and doctor checks 
 def _expected_plot_files(table: str, spec: dict) -> tuple[str, str, str]:
     """Return (kind, png_path, values_path_or_stats_path)."""
     k = spec.get("kind")
@@ -339,11 +339,7 @@ def _doctor_check_plots(dq: pd.DataFrame, cfg: dict) -> list[str]:
 
     return problems
 
-
-# End inserted helpers 
-
-
-# --- Begin inserted renderer for config-driven plots ---
+# Begin inserted renderer for config-driven plots 
 def _render_plots(df: pd.DataFrame, table: str, plots_spec: list[dict]):
     os.makedirs("plots", exist_ok=True)
     for spec in plots_spec or []:
