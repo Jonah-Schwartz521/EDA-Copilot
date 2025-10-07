@@ -10,4 +10,5 @@ xlrd==1.2.0
 # UI + API
 streamlit>=1.36,<2
 requests>=2.31.0
-openai>=1.50.0-e .
+openai>=1.50.0
+-e .
