@@ -2,6 +2,7 @@ import os
 import io
 from pathlib import Path
 import subprocess
+import sys
 import json
 import re
 
@@ -142,7 +143,8 @@ def _run_cli(cfg):
         yaml.safe_dump(cfg, f, sort_keys=False)
 
     # call your existing CLI
-    r = subprocess.run(["python", "-m", "eda", "run", "--config", cfg_path], capture_output=True, text=True)
+    cmd = [sys.executable, "-m", "eda", "run", "--config", cfg_path]
+    r = subprocess.run(cmd, capture_output=True, text=True)
     return r, cfg_path
 
 # Run flow
@@ -184,7 +186,7 @@ if run:
                     st.image(os.path.join(plot_dir, p), caption=p)
 
 if doctor:
-    r = subprocess.run(["python", "-m", "eda", "doctor"], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-m", "eda", "doctor"], capture_output=True, text=True)
     if r.returncode == 0:
         st.success("Doctor: all checks passed")
     else:
